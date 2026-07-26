@@ -1,0 +1,5 @@
+*.sh text eol=lf
+tpkg text eol=lf
+tpkg.conf text eol=lf
+README.md text eol=lf
+.gitignore text eol=lf

@@ -1,0 +1,5 @@
+.tpkg-backup/
+tpkg-downloads/
+*.part
+*.tmp
+*.log

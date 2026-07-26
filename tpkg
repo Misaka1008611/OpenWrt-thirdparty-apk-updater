@@ -1,0 +1,576 @@
+#!/bin/sh
+# Tiny third-party APK release checker for OpenWrt/ImmortalWrt.
+# POSIX/ash compatible; depends on wget or curl, plus sed/awk/find.
+
+set -u
+
+VERSION="0.1.0"
+PROG=${0##*/}
+CONFIG_FILE=""
+APK_DIR=""
+DOWNLOAD_DIR=""
+YES=0
+DRY_RUN=0
+QUIET=0
+ONLY_PACKAGE=""
+KEEP_BACKUP=1
+TPKG_ITEMS=""
+TMP_ROOT=""
+
+say() {
+	[ "$QUIET" -eq 1 ] && return 0
+	printf '%s\n' "$*"
+}
+
+warn() {
+	printf '%s\n' "$*" >&2
+}
+
+die() {
+	warn "error: $*"
+	exit 1
+}
+
+usage() {
+	cat <<EOF
+$PROG $VERSION
+
+Usage:
+  $PROG [global options] check [package]
+  $PROG [global options] update [package]
+  $PROG [global options] install <package>
+  $PROG [global options] list
+  $PROG [global options] config
+
+Global options:
+  -c, --config FILE   Use config file
+  -d, --dir DIR       APK directory, overrides config APK_DIR
+  -y, --yes           Do not ask before replacing files
+  -n, --dry-run       Show actions without downloading/replacing
+  -q, --quiet         Less output
+  -h, --help          Show this help
+
+Examples:
+  $PROG check
+  $PROG update luci-app-lucky
+  $PROG -d /mnt/sdc1/OpenWrt/apk update -y
+
+Config search order:
+  ./tpkg.conf
+  /etc/tpkg.conf
+EOF
+}
+
+cleanup() {
+	[ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ] && rm -rf "$TMP_ROOT"
+}
+
+trap cleanup EXIT HUP INT TERM
+
+have_cmd() {
+	command -v "$1" >/dev/null 2>&1
+}
+
+need_cmd() {
+	have_cmd "$1" || die "missing command: $1"
+}
+
+make_tmp_root() {
+	if [ -z "$TMP_ROOT" ]; then
+		TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/tpkg.XXXXXX") || die "failed to create temp dir"
+	fi
+}
+
+default_config_file() {
+	if [ -f "./tpkg.conf" ]; then
+		printf '%s\n' "./tpkg.conf"
+	elif [ -f "/etc/tpkg.conf" ]; then
+		printf '%s\n' "/etc/tpkg.conf"
+	else
+		printf '%s\n' ""
+	fi
+}
+
+load_config() {
+	local file
+	file=${CONFIG_FILE:-$(default_config_file)}
+	[ -n "$file" ] || die "no config found; put tpkg.conf beside the script or at /etc/tpkg.conf"
+	[ -f "$file" ] || die "config not found: $file"
+
+	# shellcheck disable=SC1090
+	. "$file"
+
+	[ -n "${APK_DIR:-}" ] || die "APK_DIR is empty"
+	[ -n "${DOWNLOAD_DIR:-}" ] || DOWNLOAD_DIR="/tmp/tpkg-downloads"
+	[ -n "${TPKG_ITEMS:-}" ] || die "TPKG_ITEMS is empty"
+}
+
+http_get() {
+	local url out
+	url=$1
+	out=$2
+
+	if have_cmd curl; then
+		curl -fsSL \
+			-H "Accept: application/vnd.github+json" \
+			-H "User-Agent: tpkg/$VERSION" \
+			-o "$out" "$url"
+	elif have_cmd wget; then
+		wget -q \
+			--header="Accept: application/vnd.github+json" \
+			--user-agent="tpkg/$VERSION" \
+			-O "$out" "$url"
+	else
+		die "need curl or wget"
+	fi
+}
+
+download_file() {
+	local url out
+	url=$1
+	out=$2
+
+	if have_cmd curl; then
+		curl -fL --progress-bar -H "User-Agent: tpkg/$VERSION" -o "$out" "$url"
+	elif have_cmd wget; then
+		wget --user-agent="tpkg/$VERSION" -O "$out" "$url"
+	else
+		die "need curl or wget"
+	fi
+}
+
+json_string_value() {
+	local key
+	key=$1
+	sed -n 's/.*"'"$key"'":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+github_release_json() {
+	local repo cache safe
+	repo=$1
+	make_tmp_root
+	safe=$(printf '%s' "$repo" | tr '/:' '__')
+	cache="$TMP_ROOT/$safe.latest.json"
+	if [ ! -s "$cache" ]; then
+		http_get "https://api.github.com/repos/$repo/releases/latest" "$cache" || return 1
+	fi
+	printf '%s\n' "$cache"
+}
+
+release_tag() {
+	json_string_value "tag_name" < "$1"
+}
+
+release_assets() {
+	# Output: filename<TAB>url
+	# GitHub's API emits name before browser_download_url for release assets.
+	awk '
+		/"name":/ {
+			line=$0
+			sub(/^.*"name":[[:space:]]*"/, "", line)
+			sub(/".*$/, "", line)
+			name=line
+		}
+		/"browser_download_url":/ {
+			line=$0
+			sub(/^.*"browser_download_url":[[:space:]]*"/, "", line)
+			sub(/".*$/, "", line)
+			if (name != "" && line ~ /\.apk($|\?)/) {
+				print name "\t" line
+			}
+			name=""
+		}
+	' "$1"
+}
+
+find_remote_asset() {
+	local repo pattern arch json
+	repo=$1
+	pattern=$2
+	arch=${3:-any}
+	json=$(github_release_json "$repo") || return 1
+	release_assets "$json" | awk -F '\t' -v pat="$pattern" -v arch="$arch" '
+		function arch_ok(name) {
+			if (name !~ /\.apk$/) return 0
+			if (name ~ /\.ipk$/) return 0
+			if (arch == "" || arch == "any") return 1
+			if (arch == "all") return name ~ /_all\.apk$/
+			if (arch == "x86_64") return name ~ /_x86_64\.apk$/
+			return name ~ ("_" arch "\\.apk$")
+		}
+		$1 ~ pat && arch_ok($1) { print; found=1; exit }
+		END { if (!found) exit 1 }
+	'
+}
+
+item_lines() {
+	printf '%s\n' "$TPKG_ITEMS" |
+		sed '/^[[:space:]]*$/d; /^[[:space:]]*#/d'
+}
+
+package_exists() {
+	local pkg
+	pkg=$1
+	item_lines | awk -F '|' -v p="$pkg" '$1 == p { found=1 } END { exit(found ? 0 : 1) }'
+}
+
+local_file_for() {
+	local pkg
+	pkg=$1
+	# Keep this simple for ash. Config package names are exact filename prefixes.
+	find "$APK_DIR" -maxdepth 1 -type f -name "$pkg-*.apk" 2>/dev/null | sort | tail -n 1
+}
+
+version_from_filename() {
+	local pkg file base version
+	pkg=$1
+	file=$2
+	base=${file##*/}
+	version=${base#"$pkg-"}
+	version=${version%.apk}
+	case "$version" in
+		*_*) version=${version%_*} ;;
+	esac
+	printf '%s\n' "$version"
+}
+
+status_line() {
+	local state pkg local_name remote_name tag extra
+	state=$1
+	pkg=$2
+	local_name=$3
+	remote_name=$4
+	tag=$5
+	extra=$6
+
+	printf '%-10s %-30s local=%-42s remote=%-42s tag=%s%s\n' \
+		"$state" "$pkg" "${local_name:--}" "${remote_name:--}" "${tag:--}" "$extra"
+}
+
+check_one() {
+	local pkg repo pattern arch json tag local_file local_name remote remote_name remote_url state extra
+	pkg=$1
+	repo=$2
+	pattern=$3
+	arch=${4:-any}
+
+	json=$(github_release_json "$repo") || {
+		status_line "ERROR" "$pkg" "-" "-" "-" " github api failed"
+		return 2
+	}
+	tag=$(release_tag "$json")
+	local_file=$(local_file_for "$pkg")
+	local_name=${local_file##*/}
+	[ -n "$local_file" ] || local_name="-"
+
+	remote=$(find_remote_asset "$repo" "$pattern" "$arch") || {
+		status_line "MISSING" "$pkg" "$local_name" "-" "$tag" " no matching .apk asset for arch=$arch"
+		return 2
+	}
+	remote_name=${remote%%	*}
+	remote_url=${remote#*	}
+	extra=""
+
+	if [ "$local_name" = "-" ]; then
+		state="NEW"
+	elif [ "$local_name" = "$remote_name" ]; then
+		state="OK"
+	else
+		state="UPDATE"
+	fi
+
+	if [ "$state" = "UPDATE" ] || [ "$state" = "NEW" ]; then
+		extra=" url=$remote_url"
+	fi
+	status_line "$state" "$pkg" "$local_name" "$remote_name" "$tag" "$extra"
+
+	case "$state" in
+		OK) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+run_check() {
+	local filter rc items pkg repo pattern arch
+	filter=${1:-}
+	rc=0
+	items=$(item_lines)
+
+	while IFS='|' read -r pkg repo pattern arch; do
+		[ -n "$pkg" ] || continue
+		if [ -n "$filter" ] && [ "$filter" != "$pkg" ]; then
+			continue
+		fi
+		check_one "$pkg" "$repo" "$pattern" "$arch" || rc=1
+	done <<EOF
+$items
+EOF
+
+	return "$rc"
+}
+
+confirm_replace() {
+	local prompt answer
+	[ "$YES" -eq 1 ] && return 0
+	prompt=$1
+	printf '%s [y/N] ' "$prompt"
+	read -r answer
+	case "$answer" in
+		y|Y|yes|YES) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+replace_apk() {
+	local pkg local_file new_file remote_name backup_dir
+	pkg=$1
+	local_file=$2
+	new_file=$3
+	remote_name=${new_file##*/}
+
+	mkdir -p "$APK_DIR" || die "failed to create APK_DIR: $APK_DIR"
+
+	if [ -n "$local_file" ] && [ -f "$local_file" ]; then
+		if [ "$KEEP_BACKUP" = "1" ]; then
+			backup_dir="$APK_DIR/.tpkg-backup"
+			mkdir -p "$backup_dir" || die "failed to create backup dir"
+			mv "$local_file" "$backup_dir/${local_file##*/}" || die "failed to backup ${local_file##*/}"
+		else
+			rm -f "$local_file" || die "failed to remove ${local_file##*/}"
+		fi
+	fi
+
+	mv "$new_file" "$APK_DIR/$remote_name" || die "failed to move $remote_name into $APK_DIR"
+	say "installed: $pkg -> $remote_name"
+}
+
+update_one() {
+	local pkg repo pattern arch json tag local_file local_name remote remote_name remote_url target tmp_file
+	pkg=$1
+	repo=$2
+	pattern=$3
+	arch=${4:-any}
+
+	json=$(github_release_json "$repo") || {
+		status_line "ERROR" "$pkg" "-" "-" "-" " github api failed"
+		return 2
+	}
+	tag=$(release_tag "$json")
+	local_file=$(local_file_for "$pkg")
+	local_name=${local_file##*/}
+	[ -n "$local_file" ] || local_name="-"
+
+	remote=$(find_remote_asset "$repo" "$pattern" "$arch") || {
+		status_line "MISSING" "$pkg" "$local_name" "-" "$tag" " no matching .apk asset for arch=$arch"
+		return 2
+	}
+	remote_name=${remote%%	*}
+	remote_url=${remote#*	}
+
+	if [ "$local_name" = "$remote_name" ]; then
+		status_line "OK" "$pkg" "$local_name" "$remote_name" "$tag" ""
+		return 0
+	fi
+
+	status_line "UPDATE" "$pkg" "$local_name" "$remote_name" "$tag" ""
+	case "$remote_name" in
+		*.apk) ;;
+		*) warn "refuse non-apk asset: $remote_name"; return 2 ;;
+	esac
+	case "$remote_name" in
+		*.ipk) warn "refuse ipk asset: $remote_name"; return 2 ;;
+	esac
+	case "$arch" in
+		x86_64)
+			case "$remote_name" in *_x86_64.apk) ;; *) warn "refuse non-x86_64 asset: $remote_name"; return 2 ;; esac
+			;;
+		all)
+			case "$remote_name" in *_all.apk) ;; *) warn "refuse non-all asset: $remote_name"; return 2 ;; esac
+			;;
+		""|any) ;;
+		*)
+			case "$remote_name" in *_"$arch".apk) ;; *) warn "refuse asset not matching arch=$arch: $remote_name"; return 2 ;; esac
+			;;
+	esac
+	if [ "$DRY_RUN" -eq 1 ]; then
+		say "dry-run: would download $remote_url"
+		return 1
+	fi
+
+	confirm_replace "Replace $local_name with $remote_name?" || {
+		say "skipped: $pkg"
+		return 1
+	}
+
+	mkdir -p "$DOWNLOAD_DIR" || die "failed to create DOWNLOAD_DIR: $DOWNLOAD_DIR"
+	target="$DOWNLOAD_DIR/$remote_name"
+	tmp_file="$target.part"
+	rm -f "$tmp_file"
+	download_file "$remote_url" "$tmp_file" || {
+		rm -f "$tmp_file"
+		warn "download failed: $remote_url"
+		return 2
+	}
+	[ -s "$tmp_file" ] || {
+		rm -f "$tmp_file"
+		warn "downloaded file is empty: $remote_name"
+		return 2
+	}
+	mv "$tmp_file" "$target" || die "failed to finalize download"
+	replace_apk "$pkg" "$local_file" "$target"
+}
+
+run_update() {
+	local filter rc items pkg repo pattern arch
+	filter=${1:-}
+	rc=0
+	items=$(item_lines)
+
+	while IFS='|' read -r pkg repo pattern arch; do
+		[ -n "$pkg" ] || continue
+		if [ -n "$filter" ] && [ "$filter" != "$pkg" ]; then
+			continue
+		fi
+		update_one "$pkg" "$repo" "$pattern" "$arch" || rc=1
+	done <<EOF
+$items
+EOF
+
+	return "$rc"
+}
+
+run_install() {
+	local pkg
+	pkg=${1:-}
+	[ -n "$pkg" ] || die "install needs a package name"
+	package_exists "$pkg" || die "unknown package: $pkg"
+	YES=1
+	run_update "$pkg"
+}
+
+run_list() {
+	local items pkg repo pattern arch local_file local_name local_ver
+	items=$(item_lines)
+	printf '%-30s %-36s %-8s %-42s %s\n' "PACKAGE" "REPO" "ARCH" "LOCAL_FILE" "LOCAL_VERSION"
+	while IFS='|' read -r pkg repo pattern arch; do
+		[ -n "$pkg" ] || continue
+		local_file=$(local_file_for "$pkg")
+		local_name=${local_file##*/}
+		if [ -n "$local_file" ]; then
+			local_ver=$(version_from_filename "$pkg" "$local_file")
+		else
+			local_name="-"
+			local_ver="-"
+		fi
+		printf '%-30s %-36s %-8s %-42s %s\n' "$pkg" "$repo" "${arch:-any}" "$local_name" "$local_ver"
+	done <<EOF
+$items
+EOF
+}
+
+show_config() {
+	cat <<EOF
+APK_DIR=$APK_DIR
+DOWNLOAD_DIR=$DOWNLOAD_DIR
+KEEP_BACKUP=$KEEP_BACKUP
+
+Items:
+EOF
+	item_lines | awk -F '|' '{ printf "  %-30s repo=%-36s arch=%-8s pattern=%s\n", $1, $2, ($4 == "" ? "any" : $4), $3 }'
+}
+
+parse_args() {
+	CMD=""
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			-c|--config)
+				shift
+				[ "$#" -gt 0 ] || die "--config needs a file"
+				CONFIG_FILE=$1
+				;;
+			-d|--dir)
+				shift
+				[ "$#" -gt 0 ] || die "--dir needs a directory"
+				APK_DIR=$1
+				;;
+			-y|--yes)
+				YES=1
+				;;
+			-n|--dry-run)
+				DRY_RUN=1
+				;;
+			-q|--quiet)
+				QUIET=1
+				;;
+			-h|--help)
+				usage
+				exit 0
+				;;
+			check|update|install|list|config)
+				CMD=$1
+				shift
+				if [ "$#" -gt 0 ]; then
+					case "$1" in
+						-*) ;;
+						*) ONLY_PACKAGE=$1; shift ;;
+					esac
+				fi
+				break
+				;;
+			*)
+				die "unknown option or command: $1"
+				;;
+		esac
+		shift
+	done
+
+	[ -n "$CMD" ] || CMD="check"
+
+	# Allow -y after subcommand for muscle memory: tpkg update -y
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			-y|--yes) YES=1 ;;
+			-n|--dry-run) DRY_RUN=1 ;;
+			-q|--quiet) QUIET=1 ;;
+			*) die "unknown trailing argument: $1" ;;
+		esac
+		shift
+	done
+}
+
+main() {
+	parse_args "$@"
+	load_config
+
+	[ -d "$APK_DIR" ] || {
+		case "$CMD" in
+			update|install) ;;
+			*) die "APK_DIR does not exist: $APK_DIR" ;;
+		esac
+	}
+
+	case "$CMD" in
+		check)
+			[ -n "$ONLY_PACKAGE" ] && package_exists "$ONLY_PACKAGE" || [ -z "$ONLY_PACKAGE" ] || die "unknown package: $ONLY_PACKAGE"
+			run_check "$ONLY_PACKAGE"
+			;;
+		update)
+			[ -n "$ONLY_PACKAGE" ] && package_exists "$ONLY_PACKAGE" || [ -z "$ONLY_PACKAGE" ] || die "unknown package: $ONLY_PACKAGE"
+			run_update "$ONLY_PACKAGE"
+			;;
+		install)
+			run_install "$ONLY_PACKAGE"
+			;;
+		list)
+			run_list
+			;;
+		config)
+			show_config
+			;;
+		*)
+			die "unknown command: $CMD"
+			;;
+	esac
+}
+
+main "$@"
