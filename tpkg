@@ -168,22 +168,36 @@ release_tag() {
 
 release_assets() {
 	# Output: filename<TAB>url
-	# GitHub's API emits name before browser_download_url for release assets.
 	awk '
-		/"name":/ {
-			line=$0
-			sub(/^.*"name":[[:space:]]*"/, "", line)
-			sub(/".*$/, "", line)
-			name=line
+		function json_value(token, prefix, value) {
+			value=token
+			sub("^" prefix, "", value)
+			sub(/"$/, "", value)
+			return value
 		}
-		/"browser_download_url":/ {
-			line=$0
-			sub(/^.*"browser_download_url":[[:space:]]*"/, "", line)
-			sub(/".*$/, "", line)
-			if (name != "" && line ~ /\.apk($|\?)/) {
-				print name "\t" line
+		{
+			text=$0
+			if (!in_assets) {
+				pos=index(text, "\"assets\":[")
+				if (!pos) next
+				text=substr(text, pos + 10)
+				in_assets=1
 			}
-			name=""
+			while (match(text, /"name":[[:space:]]*"[^"]+"/)) {
+				name_token=substr(text, RSTART, RLENGTH)
+				name=json_value(name_token, "\"name\":[[:space:]]*\"")
+				text=substr(text, RSTART + RLENGTH)
+				if (match(text, /"browser_download_url":[[:space:]]*"[^"]+"/)) {
+					url_token=substr(text, RSTART, RLENGTH)
+					url=json_value(url_token, "\"browser_download_url\":[[:space:]]*\"")
+					if (name ~ /\.apk$/ && url ~ /\.apk($|\?)/) {
+						print name "\t" url
+					}
+					text=substr(text, RSTART + RLENGTH)
+				} else {
+					exit
+				}
+			}
 		}
 	' "$1"
 }
