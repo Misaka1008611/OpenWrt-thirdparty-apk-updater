@@ -38,6 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/Misaka1008611/OpenWrt-thirdparty-ap
 安装后运行：
 
 ```sh
+tpkg token <github_token>
 tpkg check
 ```
 
@@ -110,6 +111,19 @@ apk_dir: /mnt/sdc1/OpenWrt/apk
 download_dir: /tmp/tpkg-downloads
 keep_backup: 1
 arch_priority: x86_64, all, any
+github_token:
+```
+
+`github_token` 是必填项，用来避免 GitHub API 很快触发 `403` 限流。安装后用命令写入：
+
+```sh
+tpkg token github_pat_xxx
+```
+
+这个命令会更新 `/etc/config/tpkg`，并把配置文件权限改成 `600`。也可以临时用环境变量：
+
+```sh
+GITHUB_TOKEN=github_pat_xxx tpkg check
 ```
 
 软件包配置在 `packages:` 下，每个软件包写成一段。通常只需要写 `name` 和 `release`：

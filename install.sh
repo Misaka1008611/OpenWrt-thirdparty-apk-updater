@@ -47,10 +47,12 @@ chmod 0755 "$INSTALL_BIN" || die "failed to chmod $INSTALL_BIN"
 
 if [ -f "$INSTALL_CONF" ]; then
 	cp "$INSTALL_CONF" "$INSTALL_CONF.bak" || die "failed to backup existing config"
+	printf '%s\n' "kept:      $INSTALL_CONF"
+else
+	cp "$tmp_dir/tpkg.conf" "$INSTALL_CONF" || die "failed to install $INSTALL_CONF"
+	chmod 0644 "$INSTALL_CONF" || die "failed to chmod $INSTALL_CONF"
 fi
-cp "$tmp_dir/tpkg.conf" "$INSTALL_CONF" || die "failed to install $INSTALL_CONF"
-chmod 0644 "$INSTALL_CONF" || die "failed to chmod $INSTALL_CONF"
 
 printf '%s\n' "installed: $INSTALL_BIN"
 printf '%s\n' "config:    $INSTALL_CONF"
-printf '%s\n' "try:       tpkg check"
+printf '%s\n' "try:       tpkg token <github_token>"
