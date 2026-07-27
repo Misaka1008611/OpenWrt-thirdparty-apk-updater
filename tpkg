@@ -548,8 +548,8 @@ check_one() {
 		status_line "MISSING" "$pkg" "$local_name" "-" "$tag" " no matching .apk asset"
 		return 2
 	}
-	remote_name=${remote%%	*}
-	remote_url=${remote#*	}
+	remote_name=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $1 }')
+	remote_url=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $2 }')
 	extra=""
 
 	if [ "$local_name" = "-" ]; then
@@ -646,12 +646,9 @@ update_one() {
 		status_line "MISSING" "$pkg" "$local_name" "-" "$tag" " no matching .apk asset"
 		return 2
 	}
-	remote_name=${remote%%	*}
-	remote_url=${remote#*	}
-	remote_member=""
-	case "$remote_url" in
-		*	*) remote_member=${remote_url#*	}; remote_url=${remote_url%%	*} ;;
-	esac
+	remote_name=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $1 }')
+	remote_url=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $2 }')
+	remote_member=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $3 }')
 
 	if [ "$local_name" = "$remote_name" ]; then
 		status_line "OK" "$pkg" "$local_name" "$remote_name" "$tag" ""
