@@ -12,6 +12,7 @@ DOWNLOAD_DIR=""
 YES=0
 DRY_RUN=0
 QUIET=0
+INTERACTIVE=0
 ONLY_PACKAGE=""
 KEEP_BACKUP=1
 CONFIG_PATH=""
@@ -50,12 +51,14 @@ Global options:
   -d, --dir DIR       APK directory, overrides config APK_DIR
   -y, --yes           Do not ask before replacing files
   -n, --dry-run       Show actions without downloading/replacing
+  -i, --interactive   Select updates interactively
   -q, --quiet         Less output
   -h, --help          Show this help
 
 Examples:
   $PROG token github_pat_xxx
   $PROG check
+  $PROG check -i
   $PROG update luci-app-lucky
   $PROG -d /mnt/sdc1/OpenWrt/apk update -y
 
@@ -722,6 +725,185 @@ EOF
 	return "$rc"
 }
 
+collect_candidates() {
+	local out filter items pkg repo pattern mode archive json tag local_file local_name remote remote_name state
+	out=$1
+	filter=${2:-}
+	items=$(item_lines)
+	: > "$out" || die "failed to write candidate file"
+
+	while IFS='|' read -r pkg repo pattern mode archive; do
+		[ -n "$pkg" ] || continue
+		if [ -n "$filter" ] && [ "$filter" != "$pkg" ]; then
+			continue
+		fi
+		say "checking: $pkg"
+		json=$(github_release_json "$repo" "$mode") || {
+			status_line "ERROR" "$pkg" "-" "-" "-" " github api failed"
+			continue
+		}
+		tag=$(release_tag "$json")
+		local_file=$(local_file_for "$pkg")
+		local_name=${local_file##*/}
+		[ -n "$local_file" ] || local_name="-"
+		remote=$(find_remote_asset "$pkg" "$repo" "$pattern" "$ARCH_PRIORITY" "$mode" "$archive") || {
+			status_line "MISSING" "$pkg" "$local_name" "-" "$tag" " no matching .apk asset"
+			continue
+		}
+		remote_name=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $1 }')
+		if [ "$local_name" = "-" ]; then
+			state="NEW"
+		elif [ "$local_name" = "$remote_name" ]; then
+			state="OK"
+		else
+			state="UPDATE"
+		fi
+		case "$state" in
+			NEW|UPDATE)
+				printf '0|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+					"$pkg" "$repo" "$pattern" "$mode" "$archive" "$local_name" "$remote_name" "$tag" "$state" >> "$out"
+				;;
+		esac
+	done <<EOF
+$items
+EOF
+}
+
+draw_candidates() {
+	local file index
+	file=$1
+	index=$2
+	printf '\033[H\033[J'
+	printf '%s\n' "tpkg interactive update"
+	printf '%s\n\n' "Use Up/Down or j/k, Space toggle, a all, n none, Enter update, q quit."
+	awk -F '|' -v idx="$index" '
+		{
+			cursor = (NR == idx ? ">" : " ")
+			check = ($1 == "1" ? "[x]" : "[ ]")
+			printf "%s %s %-8s %-30s %s -> %s tag=%s\n", cursor, check, $10, $2, $7, $8, $9
+		}
+	' "$file"
+	printf '\n'
+	awk -F '|' '
+		$1 == "1" { selected++ }
+		END { printf "Selected: %d / %d\n", selected + 0, NR + 0 }
+	' "$file"
+}
+
+candidate_count() {
+	awk 'END { print NR + 0 }' "$1"
+}
+
+toggle_candidate() {
+	local file index tmp
+	file=$1
+	index=$2
+	tmp="$file.tmp"
+	awk -F '|' -v OFS='|' -v idx="$index" 'NR == idx { $1 = ($1 == "1" ? "0" : "1") } { print }' "$file" > "$tmp" &&
+		mv "$tmp" "$file"
+}
+
+set_all_candidates() {
+	local file value tmp
+	file=$1
+	value=$2
+	tmp="$file.tmp"
+	awk -F '|' -v OFS='|' -v value="$value" '{ $1=value; print }' "$file" > "$tmp" &&
+		mv "$tmp" "$file"
+}
+
+run_selected_candidates() {
+	local file selected pkg repo pattern mode archive
+	file=$1
+	selected=$(awk -F '|' '$1 == "1" { count++ } END { print count + 0 }' "$file")
+	[ "$selected" -gt 0 ] || {
+		say "No packages selected."
+		return 0
+	}
+
+	YES=1
+	awk -F '|' '$1 == "1" { print $2 "|" $3 "|" $4 "|" $5 "|" $6 }' "$file" |
+	while IFS='|' read -r pkg repo pattern mode archive; do
+		update_one "$pkg" "$repo" "$pattern" "$mode" "$archive"
+	done
+}
+
+read_key() {
+	local key rest esc cr
+	esc=$(printf '\033')
+	cr=$(printf '\r')
+	key=$(dd bs=1 count=1 2>/dev/null)
+	case "$key" in
+		"$esc")
+			rest=$(dd bs=2 count=1 2>/dev/null)
+			case "$rest" in
+				"[A") printf '%s\n' "up" ;;
+				"[B") printf '%s\n' "down" ;;
+				*) printf '%s\n' "esc" ;;
+			esac
+			;;
+		"$cr") printf '%s\n' "enter" ;;
+		" ") printf '%s\n' "space" ;;
+		"") printf '%s\n' "enter" ;;
+		*) printf '%s\n' "$key" ;;
+	esac
+}
+
+run_interactive_update() {
+	local filter file count index old_stty key
+	filter=${1:-}
+	make_tmp_root
+	file="$TMP_ROOT/candidates"
+	collect_candidates "$file" "$filter"
+	count=$(candidate_count "$file")
+	[ "$count" -gt 0 ] || {
+		say "All packages are up to date."
+		return 0
+	}
+
+	if ! [ -t 0 ] || ! have_cmd stty || ! have_cmd dd; then
+		warn "interactive terminal is not available; use: tpkg update <package>"
+		return 1
+	fi
+
+	index=1
+	old_stty=$(stty -g 2>/dev/null)
+	stty raw -echo 2>/dev/null || return 1
+	while :; do
+		draw_candidates "$file" "$index"
+		key=$(read_key)
+		case "$key" in
+			up|k)
+				if [ "$index" -gt 1 ]; then index=$((index - 1)); fi
+				;;
+			down|j)
+				if [ "$index" -lt "$count" ]; then index=$((index + 1)); fi
+				;;
+			space)
+				toggle_candidate "$file" "$index"
+				;;
+			a)
+				set_all_candidates "$file" 1
+				;;
+			n)
+				set_all_candidates "$file" 0
+				;;
+			q)
+				stty "$old_stty" 2>/dev/null || true
+				printf '\n'
+				say "Cancelled."
+				return 0
+				;;
+			enter)
+				stty "$old_stty" 2>/dev/null || true
+				printf '\n'
+				run_selected_candidates "$file"
+				return $?
+				;;
+		esac
+	done
+}
+
 run_install() {
 	local pkg
 	pkg=${1:-}
@@ -825,6 +1007,9 @@ parse_args() {
 			-n|--dry-run)
 				DRY_RUN=1
 				;;
+			-i|--interactive)
+				INTERACTIVE=1
+				;;
 			-q|--quiet)
 				QUIET=1
 				;;
@@ -857,6 +1042,7 @@ parse_args() {
 		case "$1" in
 			-y|--yes) YES=1 ;;
 			-n|--dry-run) DRY_RUN=1 ;;
+			-i|--interactive) INTERACTIVE=1 ;;
 			-q|--quiet) QUIET=1 ;;
 			*) die "unknown trailing argument: $1" ;;
 		esac
@@ -879,12 +1065,20 @@ main() {
 		check)
 			need_github_token
 			[ -n "$ONLY_PACKAGE" ] && package_exists "$ONLY_PACKAGE" || [ -z "$ONLY_PACKAGE" ] || die "unknown package: $ONLY_PACKAGE"
-			run_check "$ONLY_PACKAGE"
+			if [ "$INTERACTIVE" -eq 1 ]; then
+				run_interactive_update "$ONLY_PACKAGE"
+			else
+				run_check "$ONLY_PACKAGE"
+			fi
 			;;
 		update)
 			need_github_token
 			[ -n "$ONLY_PACKAGE" ] && package_exists "$ONLY_PACKAGE" || [ -z "$ONLY_PACKAGE" ] || die "unknown package: $ONLY_PACKAGE"
-			run_update "$ONLY_PACKAGE"
+			if [ "$INTERACTIVE" -eq 1 ]; then
+				run_interactive_update "$ONLY_PACKAGE"
+			else
+				run_update "$ONLY_PACKAGE"
+			fi
 			;;
 		install)
 			need_github_token
