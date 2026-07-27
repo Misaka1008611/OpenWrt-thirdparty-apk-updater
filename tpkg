@@ -866,17 +866,17 @@ run_interactive_update() {
 		return 0
 	}
 
-	if ! [ -t 0 ] || ! have_cmd stty || ! have_cmd dd; then
-		warn "interactive terminal is not available; use: tpkg update <package>"
+	if ! [ -r /dev/tty ] || ! have_cmd stty || ! have_cmd dd; then
+		warn "interactive terminal is not available; use: tpkg update -y"
 		return 1
 	fi
 
 	index=1
-	old_stty=$(stty -g 2>/dev/null)
-	stty raw -echo 2>/dev/null || return 1
+	old_stty=$(stty -g < /dev/tty 2>/dev/null)
+	stty raw -echo < /dev/tty 2>/dev/null || return 1
 	while :; do
 		draw_candidates "$file" "$index"
-		key=$(read_key)
+		key=$(read_key < /dev/tty)
 		case "$key" in
 			up|k)
 				if [ "$index" -gt 1 ]; then index=$((index - 1)); fi
@@ -894,13 +894,13 @@ run_interactive_update() {
 				set_all_candidates "$file" 0
 				;;
 			q)
-				stty "$old_stty" 2>/dev/null || true
+				stty "$old_stty" < /dev/tty 2>/dev/null || true
 				printf '\n'
 				say "Cancelled."
 				return 0
 				;;
 			enter)
-				stty "$old_stty" 2>/dev/null || true
+				stty "$old_stty" < /dev/tty 2>/dev/null || true
 				printf '\n'
 				run_selected_candidates "$file"
 				return $?
