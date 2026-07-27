@@ -787,12 +787,18 @@ set_github_token() {
 }
 
 show_config() {
+	local token_state
+	if [ -n "$GITHUB_TOKEN_VALUE" ]; then
+		token_state="set"
+	else
+		token_state="empty"
+	fi
 	cat <<EOF
 APK_DIR=$APK_DIR
 DOWNLOAD_DIR=$DOWNLOAD_DIR
 KEEP_BACKUP=$KEEP_BACKUP
 ARCH_PRIORITY=$ARCH_PRIORITY
-GITHUB_TOKEN=$( [ -n "$GITHUB_TOKEN_VALUE" ] && printf '%s\n' "set" || printf '%s\n' "empty" )
+GITHUB_TOKEN=$token_state
 
 Items:
 EOF

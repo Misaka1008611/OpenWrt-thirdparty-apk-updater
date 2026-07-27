@@ -8,6 +8,7 @@ BRANCH=${GITHUB_BRANCH:-main}
 INSTALL_BIN=${INSTALL_BIN:-/usr/bin/tpkg}
 INSTALL_CONF=${INSTALL_CONF:-/etc/config/tpkg}
 RAW_BASE=${RAW_BASE:-https://raw.githubusercontent.com/$REPO/$BRANCH}
+CACHE_BUST=${CACHE_BUST:-}
 
 die() {
 	printf '%s\n' "error: $*" >&2
@@ -35,8 +36,10 @@ fetch() {
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/tpkg-install.XXXXXX") || die "failed to create temp dir"
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 
-fetch "$RAW_BASE/tpkg" "$tmp_dir/tpkg" || die "failed to download tpkg"
-fetch "$RAW_BASE/tpkg.conf" "$tmp_dir/tpkg.conf" || die "failed to download tpkg.conf"
+[ -n "$CACHE_BUST" ] || CACHE_BUST=$(date +%s 2>/dev/null || date)
+
+fetch "$RAW_BASE/tpkg?tpkg_cache_bust=$CACHE_BUST" "$tmp_dir/tpkg" || die "failed to download tpkg"
+fetch "$RAW_BASE/tpkg.conf?tpkg_cache_bust=$CACHE_BUST" "$tmp_dir/tpkg.conf" || die "failed to download tpkg.conf"
 
 grep -q 'Tiny third-party APK release checker' "$tmp_dir/tpkg" || die "downloaded tpkg does not look right"
 grep -q '^packages:' "$tmp_dir/tpkg.conf" || die "downloaded tpkg.conf does not look right"
