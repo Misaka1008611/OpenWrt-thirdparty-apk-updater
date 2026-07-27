@@ -109,16 +109,15 @@ tpkg -d /mnt/sdc1/OpenWrt/apk check
 apk_dir: /mnt/sdc1/OpenWrt/apk
 download_dir: /tmp/tpkg-downloads
 keep_backup: 1
+arch_priority: x86_64, all, any
 ```
 
-软件包配置在 `packages:` 下，每个软件包写成一段：
+软件包配置在 `packages:` 下，每个软件包写成一段。通常只需要写 `name` 和 `release`：
 
 ```yaml
 packages:
   - name: 包名
     release: GitHub Release 地址
-    match: 'APK文件名匹配规则'
-    arch: 架构
 ```
 
 例如：
@@ -127,21 +126,30 @@ packages:
 packages:
   - name: bandix-plus
     release: https://github.com/timsaya/openwrt-bandix-plus/releases
-    match: '^bandix-plus-.*_x86_64\.apk$'
-    arch: x86_64
 
   - name: luci-app-bandix-plus
     release: https://github.com/timsaya/luci-app-bandix-plus/releases
-    match: '^luci-app-bandix-plus-.*_all\.apk$'
-    arch: all
 
   - name: lucky
     release: https://github.com/sirpdboy/luci-app-lucky/releases
-    match: '^lucky-.*\.apk$'
-    arch: any
 ```
 
-架构字段支持：
+默认匹配规则：
+
+- 只匹配以 `包名-` 开头的 `.apk` 文件
+- 不会下载 `.ipk`
+- 如果同一个 release 里有多个匹配文件，按 `arch_priority` 从左到右选择
+- 默认优先级是 `x86_64, all, any`
+
+如果遇到特殊仓库，也可以在 package 里加可选的 `match`：
+
+```yaml
+  - name: bandix-plus
+    release: https://github.com/timsaya/openwrt-bandix-plus/releases
+    match: '^bandix-plus-.*_x86_64\.apk$'
+```
+
+`arch_priority` 支持：
 
 - `x86_64`：远端文件必须以 `_x86_64.apk` 结尾
 - `all`：远端文件必须以 `_all.apk` 结尾
