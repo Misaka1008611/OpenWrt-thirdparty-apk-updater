@@ -182,10 +182,25 @@ packages:
     match: '^bandix-plus-.*_x86_64\.apk$'
 ```
 
+还有两个特殊可选字段：
+
+```yaml
+  - name: lucky
+    release: https://github.com/sirpdboy/luci-app-lucky/releases
+    archive: '^SNAPSHOT-x86_64\.tar\.gz$'
+
+  - name: uuplugin
+    release: https://github.com/ttc0419/uuplugin/releases
+    release_mode: semver
+```
+
+- `archive`：远端 release 提供的是 `.tar.gz`，APK 在压缩包里时使用。`tpkg` 会下载压缩包，按包名和架构优先级从里面挑 `.apk`
+- `release_mode: semver`：不用 GitHub 的 `/latest`，而是从 release 列表里选择第一个 `v数字` tag，适合 `latest` tag 不是最新版本的仓库
+
 `arch_priority` 支持：
 
-- `x86_64`：远端文件必须以 `_x86_64.apk` 结尾
-- `all`：远端文件必须以 `_all.apk` 结尾
+- `x86_64`：远端文件必须以 `_x86_64.apk` 或 `-x86_64.apk` 结尾
+- `all`：远端文件必须以 `_all.apk` 或 `-all.apk` 结尾
 - `any`：只要求远端文件是 `.apk`
 
 ## 更新逻辑

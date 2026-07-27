@@ -178,14 +178,40 @@ json_string_value() {
 	sed -n 's/.*"'"$key"'":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
+release_list_first_semver_tag() {
+	awk '
+		{
+			text=text $0
+		}
+		END {
+			while (match(text, /"tag_name":[[:space:]]*"v[0-9][^"]*"/)) {
+				token=substr(text, RSTART, RLENGTH)
+				sub(/^"tag_name":[[:space:]]*"/, "", token)
+				sub(/"$/, "", token)
+				print token
+				exit
+			}
+			exit 1
+		}
+	' "$1"
+}
+
 github_release_json() {
-	local repo cache safe
+	local repo mode cache list_cache safe tag
 	repo=$1
+	mode=${2:-latest}
 	make_tmp_root
 	safe=$(printf '%s' "$repo" | tr '/:' '__')
-	cache="$TMP_ROOT/$safe.latest.json"
+	cache="$TMP_ROOT/$safe.$mode.json"
 	if [ ! -s "$cache" ]; then
-		http_get "https://api.github.com/repos/$repo/releases/latest" "$cache" || return 1
+		if [ "$mode" = "semver" ]; then
+			list_cache="$TMP_ROOT/$safe.releases.json"
+			http_get "https://api.github.com/repos/$repo/releases?per_page=30" "$list_cache" || return 1
+			tag=$(release_list_first_semver_tag "$list_cache") || return 1
+			http_get "https://api.github.com/repos/$repo/releases/tags/$tag" "$cache" || return 1
+		else
+			http_get "https://api.github.com/repos/$repo/releases/latest" "$cache" || return 1
+		fi
 	fi
 	printf '%s\n' "$cache"
 }
@@ -217,9 +243,7 @@ release_assets() {
 				if (match(text, /"browser_download_url":[[:space:]]*"[^"]+"/)) {
 					url_token=substr(text, RSTART, RLENGTH)
 					url=json_value(url_token, "\"browser_download_url\":[[:space:]]*\"")
-					if (name ~ /\.apk$/ && url ~ /\.apk($|\?)/) {
-						print name "\t" url
-					}
+					print name "\t" url
 					text=substr(text, RSTART + RLENGTH)
 				} else {
 					exit
@@ -229,14 +253,107 @@ release_assets() {
 	' "$1"
 }
 
+download_archive_asset() {
+	local name url cache safe tmp_file
+	name=$1
+	url=$2
+	make_tmp_root
+	safe=$(printf '%s' "$name" | tr '/:?' '___')
+	cache="$TMP_ROOT/$safe"
+	if [ ! -s "$cache" ]; then
+		tmp_file="$cache.part"
+		rm -f "$tmp_file"
+		download_file "$url" "$tmp_file" >/dev/null 2>&1 || {
+			rm -f "$tmp_file"
+			return 1
+		}
+		mv "$tmp_file" "$cache" || return 1
+	fi
+	printf '%s\n' "$cache"
+}
+
+archive_member_asset() {
+	local archive_file pkg pattern priority
+	archive_file=$1
+	pkg=$2
+	pattern=$3
+	priority=$4
+	tar -tzf "$archive_file" | awk -v pkg="$pkg" -v pat="$pattern" -v priority="$priority" '
+		function trim(s) {
+			sub(/^[ \t\r\n]+/, "", s)
+			sub(/[ \t\r\n]+$/, "", s)
+			return s
+		}
+		function basename(path, base) {
+			base=path
+			sub(/^.*\//, "", base)
+			return base
+		}
+		function asset_ok(name) {
+			if (name !~ /\.apk$/) return 0
+			if (name ~ /\.ipk$/) return 0
+			if (pat != "") return name ~ pat
+			return index(name, pkg "-") == 1
+		}
+		function arch_match(name, arch) {
+			arch=trim(arch)
+			if (arch == "" || arch == "any") return 1
+			if (arch == "all") return name ~ /[_-]all\.apk$/
+			return name ~ ("[_-]" arch "\\.apk$")
+		}
+		BEGIN {
+			gsub(/[\[\]]/, "", priority)
+			count=split(priority, wanted, ",")
+			if (count < 1) {
+				count=3
+				wanted[1]="x86_64"; wanted[2]="all"; wanted[3]="any"
+			}
+		}
+		{
+			name=basename($0)
+			if (!asset_ok(name)) next
+			for (i=1; i<=count; i++) {
+				if (arch_match(name, wanted[i])) {
+					if (best == "" || i < best_i) {
+						best=name "\t" $0
+						best_i=i
+						if (i == 1) {
+							print best
+							found=1
+							exit
+						}
+					}
+					break
+				}
+			}
+		}
+		END {
+			if (found) exit 0
+			if (best != "") print best
+			else exit 1
+		}
+	'
+}
+
 find_remote_asset() {
-	local pkg repo pattern priority json
+	local pkg repo pattern priority mode archive json archive_line archive_name archive_url archive_file member
 	pkg=$1
 	repo=$2
 	pattern=$3
 	priority=${4:-}
+	mode=${5:-latest}
+	archive=${6:-}
 	[ -n "$priority" ] || priority="x86_64, all, any"
-	json=$(github_release_json "$repo") || return 1
+	json=$(github_release_json "$repo" "$mode") || return 1
+	if [ -n "$archive" ]; then
+		archive_line=$(release_assets "$json" | awk -F '\t' -v pat="$archive" '$1 ~ pat { print; found=1; exit } END { if (!found) exit 1 }') || return 1
+		archive_name=${archive_line%%	*}
+		archive_url=${archive_line#*	}
+		archive_file=$(download_archive_asset "$archive_name" "$archive_url") || return 1
+		member=$(archive_member_asset "$archive_file" "$pkg" "$pattern" "$priority") || return 1
+		printf '%s\t%s\t%s\n' "${member%%	*}" "$archive_url" "${member#*	}"
+		return 0
+	fi
 	release_assets "$json" | awk -F '\t' -v pkg="$pkg" -v pat="$pattern" -v priority="$priority" '
 		function trim(s) {
 			sub(/^[ \t\r\n]+/, "", s)
@@ -252,8 +369,8 @@ find_remote_asset() {
 		function arch_match(name, arch) {
 			arch=trim(arch)
 			if (arch == "" || arch == "any") return 1
-			if (arch == "all") return name ~ /_all\.apk$/
-			return name ~ ("_" arch "\\.apk$")
+			if (arch == "all") return name ~ /[_-]all\.apk$/
+			return name ~ ("[_-]" arch "\\.apk$")
 		}
 		BEGIN {
 			gsub(/[\[\]]/, "", priority)
@@ -329,15 +446,22 @@ item_lines() {
 				return url
 			}
 			function emit() {
-				if (pkg != "" || release != "" || pattern != "") {
+				if (pkg != "" || release != "" || pattern != "" || mode != "" || archive != "") {
 					if (pkg == "" || release == "") {
 						printf "invalid config block near package=%s\n", pkg > "/dev/stderr"
 						bad=1
 					} else {
-						printf "%s|%s|%s\n", pkg, repo_from_release(release), pattern
+						if (mode == "") mode="latest"
+						if (repo_from_release(release) == "sirpdboy/luci-app-lucky" && archive == "") {
+							archive="^SNAPSHOT-x86_64\\.tar\\.gz$"
+						}
+						if (repo_from_release(release) == "ttc0419/uuplugin" && mode == "latest") {
+							mode="semver"
+						}
+						printf "%s|%s|%s|%s|%s\n", pkg, repo_from_release(release), pattern, mode, archive
 					}
 				}
-				pkg=""; release=""; pattern=""
+				pkg=""; release=""; pattern=""; mode=""; archive=""
 			}
 			/^[ \t]*packages[ \t]*:/ { in_packages=1; next }
 			!in_packages { next }
@@ -359,6 +483,8 @@ item_lines() {
 				value=trim(value)
 				if (key == "release") release=clean(value)
 				else if (key == "match") pattern=clean(value)
+				else if (key == "release_mode") mode=clean(value)
+				else if (key == "archive") archive=clean(value)
 				else {
 					printf "unknown config key: %s\n", key > "/dev/stderr"
 					bad=1
@@ -408,12 +534,14 @@ status_line() {
 }
 
 check_one() {
-	local pkg repo pattern json tag local_file local_name remote remote_name remote_url state extra
+	local pkg repo pattern mode archive json tag local_file local_name remote remote_name remote_url state extra
 	pkg=$1
 	repo=$2
 	pattern=$3
+	mode=$4
+	archive=$5
 
-	json=$(github_release_json "$repo") || {
+	json=$(github_release_json "$repo" "$mode") || {
 		status_line "ERROR" "$pkg" "-" "-" "-" " github api failed"
 		return 2
 	}
@@ -422,7 +550,7 @@ check_one() {
 	local_name=${local_file##*/}
 	[ -n "$local_file" ] || local_name="-"
 
-	remote=$(find_remote_asset "$pkg" "$repo" "$pattern" "$ARCH_PRIORITY") || {
+	remote=$(find_remote_asset "$pkg" "$repo" "$pattern" "$ARCH_PRIORITY" "$mode" "$archive") || {
 		status_line "MISSING" "$pkg" "$local_name" "-" "$tag" " no matching .apk asset"
 		return 2
 	}
@@ -450,17 +578,17 @@ check_one() {
 }
 
 run_check() {
-	local filter rc items pkg repo pattern
+	local filter rc items pkg repo pattern mode archive
 	filter=${1:-}
 	rc=0
 	items=$(item_lines)
 
-	while IFS='|' read -r pkg repo pattern; do
+	while IFS='|' read -r pkg repo pattern mode archive; do
 		[ -n "$pkg" ] || continue
 		if [ -n "$filter" ] && [ "$filter" != "$pkg" ]; then
 			continue
 		fi
-		check_one "$pkg" "$repo" "$pattern" || rc=1
+		check_one "$pkg" "$repo" "$pattern" "$mode" "$archive" || rc=1
 	done <<EOF
 $items
 EOF
@@ -504,12 +632,14 @@ replace_apk() {
 }
 
 update_one() {
-	local pkg repo pattern json tag local_file local_name remote remote_name remote_url target tmp_file
+	local pkg repo pattern mode archive json tag local_file local_name remote remote_name remote_url remote_member target tmp_file archive_file
 	pkg=$1
 	repo=$2
 	pattern=$3
+	mode=$4
+	archive=$5
 
-	json=$(github_release_json "$repo") || {
+	json=$(github_release_json "$repo" "$mode") || {
 		status_line "ERROR" "$pkg" "-" "-" "-" " github api failed"
 		return 2
 	}
@@ -518,12 +648,16 @@ update_one() {
 	local_name=${local_file##*/}
 	[ -n "$local_file" ] || local_name="-"
 
-	remote=$(find_remote_asset "$pkg" "$repo" "$pattern" "$ARCH_PRIORITY") || {
+	remote=$(find_remote_asset "$pkg" "$repo" "$pattern" "$ARCH_PRIORITY" "$mode" "$archive") || {
 		status_line "MISSING" "$pkg" "$local_name" "-" "$tag" " no matching .apk asset"
 		return 2
 	}
 	remote_name=${remote%%	*}
 	remote_url=${remote#*	}
+	remote_member=""
+	case "$remote_url" in
+		*	*) remote_member=${remote_url#*	}; remote_url=${remote_url%%	*} ;;
+	esac
 
 	if [ "$local_name" = "$remote_name" ]; then
 		status_line "OK" "$pkg" "$local_name" "$remote_name" "$tag" ""
@@ -552,11 +686,23 @@ update_one() {
 	target="$DOWNLOAD_DIR/$remote_name"
 	tmp_file="$target.part"
 	rm -f "$tmp_file"
-	download_file "$remote_url" "$tmp_file" || {
-		rm -f "$tmp_file"
-		warn "download failed: $remote_url"
-		return 2
-	}
+	if [ -n "$remote_member" ]; then
+		archive_file=$(download_archive_asset "${remote_url##*/}" "$remote_url") || {
+			warn "download failed: $remote_url"
+			return 2
+		}
+		tar -xOzf "$archive_file" "$remote_member" > "$tmp_file" || {
+			rm -f "$tmp_file"
+			warn "extract failed: $remote_member"
+			return 2
+		}
+	else
+		download_file "$remote_url" "$tmp_file" || {
+			rm -f "$tmp_file"
+			warn "download failed: $remote_url"
+			return 2
+		}
+	fi
 	[ -s "$tmp_file" ] || {
 		rm -f "$tmp_file"
 		warn "downloaded file is empty: $remote_name"
@@ -567,17 +713,17 @@ update_one() {
 }
 
 run_update() {
-	local filter rc items pkg repo pattern
+	local filter rc items pkg repo pattern mode archive
 	filter=${1:-}
 	rc=0
 	items=$(item_lines)
 
-	while IFS='|' read -r pkg repo pattern; do
+	while IFS='|' read -r pkg repo pattern mode archive; do
 		[ -n "$pkg" ] || continue
 		if [ -n "$filter" ] && [ "$filter" != "$pkg" ]; then
 			continue
 		fi
-		update_one "$pkg" "$repo" "$pattern" || rc=1
+		update_one "$pkg" "$repo" "$pattern" "$mode" "$archive" || rc=1
 	done <<EOF
 $items
 EOF
@@ -595,10 +741,10 @@ run_install() {
 }
 
 run_list() {
-	local items pkg repo pattern local_file local_name local_ver
+	local items pkg repo pattern mode archive local_file local_name local_ver
 	items=$(item_lines)
 	printf '%-30s %-36s %-42s %s\n' "PACKAGE" "REPO" "LOCAL_FILE" "LOCAL_VERSION"
-	while IFS='|' read -r pkg repo pattern; do
+	while IFS='|' read -r pkg repo pattern mode archive; do
 		[ -n "$pkg" ] || continue
 		local_file=$(local_file_for "$pkg")
 		local_name=${local_file##*/}
@@ -659,7 +805,7 @@ GITHUB_TOKEN=$( [ -n "$GITHUB_TOKEN_VALUE" ] && printf '%s\n' "set" || printf '%
 
 Items:
 EOF
-	item_lines | awk -F '|' '{ printf "  %-30s repo=%-36s pattern=%s\n", $1, $2, ($3 == "" ? "auto" : $3) }'
+	item_lines | awk -F '|' '{ printf "  %-30s repo=%-36s mode=%-8s pattern=%-16s archive=%s\n", $1, $2, $4, ($3 == "" ? "auto" : $3), ($5 == "" ? "-" : $5) }'
 }
 
 parse_args() {
