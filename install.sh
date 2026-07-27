@@ -6,7 +6,7 @@ set -u
 REPO=${GITHUB_REPO:-Misaka1008611/OpenWrt-thirdparty-apk-updater}
 BRANCH=${GITHUB_BRANCH:-main}
 INSTALL_BIN=${INSTALL_BIN:-/usr/bin/tpkg}
-INSTALL_CONF=${INSTALL_CONF:-/etc/tpkg.conf}
+INSTALL_CONF=${INSTALL_CONF:-/etc/config/tpkg}
 RAW_BASE=${RAW_BASE:-https://raw.githubusercontent.com/$REPO/$BRANCH}
 
 die() {

@@ -57,7 +57,7 @@ Examples:
 
 Config search order:
   ./tpkg.conf
-  /etc/tpkg.conf
+  /etc/config/tpkg
 EOF
 }
 
@@ -84,8 +84,8 @@ make_tmp_root() {
 default_config_file() {
 	if [ -f "./tpkg.conf" ]; then
 		printf '%s\n' "./tpkg.conf"
-	elif [ -f "/etc/tpkg.conf" ]; then
-		printf '%s\n' "/etc/tpkg.conf"
+	elif [ -f "/etc/config/tpkg" ]; then
+		printf '%s\n' "/etc/config/tpkg"
 	else
 		printf '%s\n' ""
 	fi
@@ -94,7 +94,7 @@ default_config_file() {
 load_config() {
 	local file
 	file=${CONFIG_FILE:-$(default_config_file)}
-	[ -n "$file" ] || die "no config found; put tpkg.conf beside the script or at /etc/tpkg.conf"
+	[ -n "$file" ] || die "no config found; put tpkg.conf beside the script or at /etc/config/tpkg"
 	[ -f "$file" ] || die "config not found: $file"
 
 	# shellcheck disable=SC1090

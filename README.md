@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/Misaka1008611/OpenWrt-thirdparty-ap
 
 ```sh
 /usr/bin/tpkg
-/etc/tpkg.conf
+/etc/config/tpkg
 ```
 
 安装后运行：
@@ -46,7 +46,7 @@ tpkg check
 ```sh
 cp tpkg /usr/bin/tpkg
 chmod +x /usr/bin/tpkg
-cp tpkg.conf /etc/tpkg.conf
+cp tpkg.conf /etc/config/tpkg
 ```
 
 ## 使用方法
@@ -101,7 +101,9 @@ tpkg -d /mnt/sdc1/OpenWrt/apk check
 
 ## 配置说明
 
-默认 APK 目录在 `tpkg.conf` 里：
+默认配置文件是 `/etc/config/tpkg`。
+
+默认 APK 目录在配置文件里：
 
 ```sh
 APK_DIR=${APK_DIR:-/mnt/sdc1/OpenWrt/apk}
