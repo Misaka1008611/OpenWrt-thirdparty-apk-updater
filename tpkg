@@ -782,10 +782,18 @@ draw_candidates() {
 	printf '%s\n' "tpkg interactive update"
 	printf '%s\n\n' "Use Up/Down or j/k, Space toggle, a all, n none, Enter update, q quit."
 	awk -F '|' -v idx="$index" '
+		function version(pkg, file, v) {
+			if (file == "-") return "-"
+			v=file
+			sub("^" pkg "-", "", v)
+			sub(/\.apk$/, "", v)
+			sub(/[_-](x86_64|all|aarch64.*|arm.*|mips.*|riscv64.*)$/, "", v)
+			return v
+		}
 		{
 			cursor = (NR == idx ? ">" : " ")
 			check = ($1 == "1" ? "[x]" : "[ ]")
-			printf "%s %s %-8s %-30s %s -> %s tag=%s\n", cursor, check, $10, $2, $7, $8, $9
+			printf "%s %s %-9s %-30s %-24s -> %-24s tag=%s\n", cursor, check, $10, $2, version($2, $7), version($2, $8), $9
 		}
 	' "$file"
 	printf '\n'
@@ -920,9 +928,17 @@ run_line_update() {
 	while :; do
 		printf '\n%s\n\n' "tpkg update"
 		awk -F '|' '
+			function version(pkg, file, v) {
+				if (file == "-") return "-"
+				v=file
+				sub("^" pkg "-", "", v)
+				sub(/\.apk$/, "", v)
+				sub(/[_-](x86_64|all|aarch64.*|arm.*|mips.*|riscv64.*)$/, "", v)
+				return v
+			}
 			{
 				check = ($1 == "1" ? "[x]" : "[ ]")
-				printf "%2d. %s %-8s %-30s %s -> %s tag=%s\n", NR, check, $10, $2, $7, $8, $9
+				printf "%2d. %s %-9s %-30s %-24s -> %-24s tag=%s\n", NR, check, $10, $2, version($2, $7), version($2, $8), $9
 			}
 		' "$file"
 		printf '\n%s\n' "Enter numbers to toggle, a=all, n=none, y=update selected, q=quit"
