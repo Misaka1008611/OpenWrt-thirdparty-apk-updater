@@ -866,9 +866,14 @@ run_interactive_update() {
 		return 0
 	}
 
-	if ! [ -r /dev/tty ] || ! have_cmd stty || ! have_cmd dd; then
-		warn "interactive terminal is not available; use: tpkg update -y"
-		return 1
+	if ! have_cmd stty; then
+		run_line_update "$file"
+		return $?
+	fi
+
+	if ! [ -r /dev/tty ] || ! have_cmd dd; then
+		run_line_update "$file"
+		return $?
 	fi
 
 	index=1
@@ -904,6 +909,50 @@ run_interactive_update() {
 				printf '\n'
 				run_selected_candidates "$file"
 				return $?
+				;;
+		esac
+	done
+}
+
+run_line_update() {
+	local file answer selected tmp n
+	file=$1
+	while :; do
+		printf '\n%s\n\n' "tpkg update"
+		awk -F '|' '
+			{
+				check = ($1 == "1" ? "[x]" : "[ ]")
+				printf "%2d. %s %-8s %-30s %s -> %s tag=%s\n", NR, check, $10, $2, $7, $8, $9
+			}
+		' "$file"
+		printf '\n%s\n' "Enter numbers to toggle, a=all, n=none, y=update selected, q=quit"
+		printf '> '
+		read -r answer
+		case "$answer" in
+			q|Q)
+				say "Cancelled."
+				return 0
+				;;
+			a|A)
+				set_all_candidates "$file" 1
+				;;
+			n|N)
+				set_all_candidates "$file" 0
+				;;
+			y|Y|"")
+				run_selected_candidates "$file"
+				return $?
+				;;
+			*)
+				tmp="$file.tmp"
+				cp "$file" "$tmp" || return 1
+				for n in $answer; do
+					case "$n" in
+						*[!0-9]*|"") ;;
+						*) toggle_candidate "$tmp" "$n" ;;
+					esac
+				done
+				mv "$tmp" "$file" || return 1
 				;;
 		esac
 	done
