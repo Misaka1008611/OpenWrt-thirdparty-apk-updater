@@ -16,16 +16,16 @@
 
 ## 一键安装
 
-项目发布到 GitHub 后，可以在路由器上这样安装：
+可以在路由器上这样安装：
 
 ```sh
-wget -O- https://raw.githubusercontent.com/你的用户名/openwrt-thirdpartyApk-updateCheck/main/install.sh | GITHUB_REPO=你的用户名/openwrt-thirdpartyApk-updateCheck sh
+wget -O- https://raw.githubusercontent.com/Misaka1008611/OpenWrt-thirdparty-apk-updater/main/install.sh | sh
 ```
 
 如果你的系统没有 `wget`，但有 `curl`：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/你的用户名/openwrt-thirdpartyApk-updateCheck/main/install.sh | GITHUB_REPO=你的用户名/openwrt-thirdpartyApk-updateCheck sh
+curl -fsSL https://raw.githubusercontent.com/Misaka1008611/OpenWrt-thirdparty-apk-updater/main/install.sh | sh
 ```
 
 默认安装位置：

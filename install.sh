@@ -3,7 +3,7 @@
 
 set -u
 
-REPO=${GITHUB_REPO:-YOUR_GITHUB_USERNAME/openwrt-thirdpartyApk-updateCheck}
+REPO=${GITHUB_REPO:-Misaka1008611/OpenWrt-thirdparty-apk-updater}
 BRANCH=${GITHUB_BRANCH:-main}
 INSTALL_BIN=${INSTALL_BIN:-/usr/bin/tpkg}
 INSTALL_CONF=${INSTALL_CONF:-/etc/tpkg.conf}
@@ -29,12 +29,6 @@ fetch() {
 		die "need curl or wget"
 	fi
 }
-
-case "$REPO" in
-	YOUR_GITHUB_USERNAME/*)
-		die "please set GITHUB_REPO first, for example: GITHUB_REPO=yourname/openwrt-thirdpartyApk-updateCheck sh install.sh"
-		;;
-esac
 
 [ "$(id -u)" = "0" ] || die "please run as root"
 
