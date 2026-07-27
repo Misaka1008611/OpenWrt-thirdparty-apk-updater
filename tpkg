@@ -504,6 +504,34 @@ local_file_for() {
 	find "$APK_DIR" -maxdepth 1 -type f -name "$pkg-*.apk" 2>/dev/null | sort | tail -n 1
 }
 
+package_installed() {
+	local pkg
+	pkg=$1
+	have_cmd apk || return 0
+	apk info -e "$pkg" >/dev/null 2>&1
+}
+
+install_apk_file() {
+	local pkg apk_file
+	pkg=$1
+	apk_file=$2
+
+	if ! have_cmd apk; then
+		warn "apk command not found; kept file only: ${apk_file##*/}"
+		return 0
+	fi
+
+	apk add --allow-untrusted "$apk_file" || {
+		warn "apk install failed: ${apk_file##*/}"
+		return 2
+	}
+	package_installed "$pkg" || {
+		warn "apk install did not register package: $pkg"
+		return 2
+	}
+	say "system-installed: $pkg"
+}
+
 version_from_filename() {
 	local pkg file base version
 	pkg=$1
@@ -515,6 +543,53 @@ version_from_filename() {
 		*_*) version=${version%_*} ;;
 	esac
 	printf '%s\n' "$version"
+}
+
+version_from_apk_metadata() {
+	local file
+	file=$1
+	[ -n "$file" ] && [ -f "$file" ] || return 1
+	have_cmd tar || return 1
+
+	tar -xOzf "$file" .PKGINFO 2>/dev/null | awk '
+		/^pkgver = / {
+			sub(/^pkgver = /, "")
+			print
+			found=1
+			exit
+		}
+		END { if (!found) exit 1 }
+	'
+}
+
+local_version_for() {
+	local pkg file name version
+	pkg=$1
+	file=$2
+	name=${3:-}
+
+	version=$(version_from_apk_metadata "$file" 2>/dev/null) || version=""
+	if [ -n "$version" ]; then
+		printf '%s\n' "$version"
+	elif [ -n "$name" ] && [ "$name" != "-" ]; then
+		version_from_filename "$pkg" "$name"
+	else
+		printf '%s\n' "-"
+	fi
+}
+
+remote_version_for() {
+	local pkg local_name local_version remote_name
+	pkg=$1
+	local_name=$2
+	local_version=$3
+	remote_name=$4
+
+	if [ "$local_name" = "$remote_name" ] && [ "$local_version" != "-" ]; then
+		printf '%s\n' "$local_version"
+	else
+		version_from_filename "$pkg" "$remote_name"
+	fi
 }
 
 status_line() {
@@ -557,6 +632,8 @@ check_one() {
 
 	if [ "$local_name" = "-" ]; then
 		state="NEW"
+	elif ! package_installed "$pkg"; then
+		state="INSTALL"
 	elif [ "$local_name" = "$remote_name" ]; then
 		state="OK"
 	else
@@ -625,7 +702,8 @@ replace_apk() {
 	fi
 
 	mv "$new_file" "$APK_DIR/$remote_name" || die "failed to move $remote_name into $APK_DIR"
-	say "installed: $pkg -> $remote_name"
+	say "stored: $pkg -> $remote_name"
+	install_apk_file "$pkg" "$APK_DIR/$remote_name"
 }
 
 update_one() {
@@ -653,6 +731,20 @@ update_one() {
 	remote_name=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $1 }')
 	remote_url=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $2 }')
 	remote_member=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $3 }')
+
+	if [ "$local_name" = "$remote_name" ] && ! package_installed "$pkg"; then
+		status_line "INSTALL" "$pkg" "$local_name" "$remote_name" "$tag" ""
+		if [ "$DRY_RUN" -eq 1 ]; then
+			say "dry-run: would install $local_file"
+			return 1
+		fi
+		confirm_replace "Install $remote_name?" || {
+			say "skipped: $pkg"
+			return 1
+		}
+		install_apk_file "$pkg" "$local_file"
+		return $?
+	fi
 
 	if [ "$local_name" = "$remote_name" ] && [ "$force" != "1" ]; then
 		status_line "OK" "$pkg" "$local_name" "$remote_name" "$tag" ""
@@ -731,7 +823,7 @@ EOF
 }
 
 collect_candidates() {
-	local out filter items pkg repo pattern mode archive json tag local_file local_name remote remote_name state
+	local out filter items pkg repo pattern mode archive json tag local_file local_name remote remote_name state local_version remote_version
 	out=$1
 	filter=${2:-}
 	items=$(item_lines)
@@ -756,8 +848,12 @@ collect_candidates() {
 			continue
 		}
 		remote_name=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $1 }')
+		local_version=$(local_version_for "$pkg" "$local_file" "$local_name")
+		remote_version=$(remote_version_for "$pkg" "$local_name" "$local_version" "$remote_name")
 		if [ "$local_name" = "-" ]; then
 			state="NEW"
+		elif ! package_installed "$pkg"; then
+			state="INSTALL"
 		elif [ "$local_name" = "$remote_name" ]; then
 			state="OK"
 		else
@@ -765,10 +861,10 @@ collect_candidates() {
 		fi
 		selected=0
 		case "$state" in
-			NEW|UPDATE) selected=1 ;;
+			NEW|UPDATE|INSTALL) selected=1 ;;
 		esac
-		printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-			"$selected" "$pkg" "$repo" "$pattern" "$mode" "$archive" "$local_name" "$remote_name" "$tag" "$state" >> "$out"
+		printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+			"$selected" "$pkg" "$repo" "$pattern" "$mode" "$archive" "$local_name" "$remote_name" "$tag" "$state" "$local_version" "$remote_version" >> "$out"
 	done <<EOF
 $items
 EOF
@@ -782,18 +878,10 @@ draw_candidates() {
 	printf '%s\n' "tpkg interactive update"
 	printf '%s\n\n' "Use Up/Down or j/k, Space toggle, a all, n none, Enter update, q quit."
 	awk -F '|' -v idx="$index" '
-		function version(pkg, file, v) {
-			if (file == "-") return "-"
-			v=file
-			sub("^" pkg "-", "", v)
-			sub(/\.apk$/, "", v)
-			sub(/[_-](x86_64|all|aarch64.*|arm.*|mips.*|riscv64.*)$/, "", v)
-			return v
-		}
 		{
 			cursor = (NR == idx ? ">" : " ")
 			check = ($1 == "1" ? "[x]" : "[ ]")
-			printf "%s %s %-9s %-30s %-24s -> %-24s tag=%s\n", cursor, check, $10, $2, version($2, $7), version($2, $8), $9
+			printf "%s %s %-9s %-30s %-24s -> %-24s tag=%s\n", cursor, check, $10, $2, $11, $12, $9
 		}
 	' "$file"
 	printf '\n'
@@ -826,7 +914,7 @@ set_all_candidates() {
 }
 
 run_selected_candidates() {
-	local file selected pkg repo pattern mode archive
+	local file selected selected_lines pkg repo pattern mode archive rc
 	file=$1
 	selected=$(awk -F '|' '$1 == "1" { count++ } END { print count + 0 }' "$file")
 	[ "$selected" -gt 0 ] || {
@@ -835,10 +923,15 @@ run_selected_candidates() {
 	}
 
 	YES=1
-	awk -F '|' '$1 == "1" { print $2 "|" $3 "|" $4 "|" $5 "|" $6 }' "$file" |
+	rc=0
+	selected_lines=$(awk -F '|' '$1 == "1" { print $2 "|" $3 "|" $4 "|" $5 "|" $6 }' "$file")
 	while IFS='|' read -r pkg repo pattern mode archive; do
-		update_one "$pkg" "$repo" "$pattern" "$mode" "$archive" 1
-	done
+		[ -n "$pkg" ] || continue
+		update_one "$pkg" "$repo" "$pattern" "$mode" "$archive" 1 || rc=1
+	done <<EOF
+$selected_lines
+EOF
+	return "$rc"
 }
 
 read_key() {
@@ -928,17 +1021,9 @@ run_line_update() {
 	while :; do
 		printf '\n%s\n\n' "tpkg update"
 		awk -F '|' '
-			function version(pkg, file, v) {
-				if (file == "-") return "-"
-				v=file
-				sub("^" pkg "-", "", v)
-				sub(/\.apk$/, "", v)
-				sub(/[_-](x86_64|all|aarch64.*|arm.*|mips.*|riscv64.*)$/, "", v)
-				return v
-			}
 			{
 				check = ($1 == "1" ? "[x]" : "[ ]")
-				printf "%2d. %s %-9s %-30s %-24s -> %-24s tag=%s\n", NR, check, $10, $2, version($2, $7), version($2, $8), $9
+				printf "%2d. %s %-9s %-30s %-24s -> %-24s tag=%s\n", NR, check, $10, $2, $11, $12, $9
 			}
 		' "$file"
 		printf '\n%s\n' "Enter numbers to toggle, a=all, n=none, y=update selected, q=quit"
@@ -992,7 +1077,7 @@ run_list() {
 		local_file=$(local_file_for "$pkg")
 		local_name=${local_file##*/}
 		if [ -n "$local_file" ]; then
-			local_ver=$(version_from_filename "$pkg" "$local_file")
+			local_ver=$(local_version_for "$pkg" "$local_file" "$local_name")
 		else
 			local_name="-"
 			local_ver="-"

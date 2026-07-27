@@ -1,6 +1,6 @@
 # OpenWrt 第三方 APK 更新检查工具
 
-`tpkg` 是一个给 ImmortalWrt / OpenWrt 用的小工具，用来检查 GitHub Releases 上的第三方 `.apk` 包是否有更新，并在确认后下载替换到指定目录。
+`tpkg` 是一个给 ImmortalWrt / OpenWrt 用的小工具，用来检查 GitHub Releases 上的第三方 `.apk` 包是否有更新，并在确认后下载到指定目录，再通过 `apk add` 安装到系统。
 
 它是纯 Shell 脚本，目标是兼容路由器上的 `ash`，只依赖 `curl` 或 `wget`，以及系统常见的 `sed`、`awk`、`find`。
 
@@ -9,7 +9,7 @@
 - 检查本地 APK 和 GitHub 最新 Release 里的 APK 文件名是否一致
 - 发现新版本时显示本地文件、远端文件、release tag 和下载地址
 - 支持 `check`、`update`、`install`、`list`、`config`
-- 下载成功后才替换本地文件
+- 下载成功后才替换本地文件，并安装到系统包数据库
 - 默认把旧文件备份到 `.tpkg-backup`
 - 下载前会确认文件后缀是 `.apk`，不会把 `.ipk` 下载回来
 - 可以按配置限制架构，例如 `x86_64`、`all`
@@ -93,7 +93,7 @@ tpkg update luci-app-lucky
 - `y` 或直接回车：更新选中的包
 - `q`：退出
 
-交互模式会列出所有能识别到远端 APK 的包。`NEW` 和 `UPDATE` 默认选中，`OK` 默认不选；如果手动选中 `OK`，会重新下载安装，用于测试或修复本地文件。
+交互模式会列出所有能识别到远端 APK 的包。`NEW`、`UPDATE` 和 `INSTALL` 默认选中，`OK` 默认不选；如果手动选中 `OK`，会重新下载安装，用于测试或修复本地文件。
 
 交互列表会显示版本变化，例如 `1.0.0-r1 -> 1.0.1-r1`，不会直接把完整 APK 文件名塞在主列里。
 
@@ -228,9 +228,12 @@ packages:
 
 `tpkg` 不强行解析各种上游版本号，而是比较 APK 文件名：
 
-- 本地文件名和远端最新 Release 的匹配文件名一样：显示 `OK`
+- 本地文件名和远端最新 Release 的匹配文件名一样，且系统已安装该包：显示 `OK`
 - 本地没有该文件：显示 `NEW`
+- 本地文件存在，但系统包数据库里没有该包：显示 `INSTALL`
 - 文件名不同：显示 `UPDATE`
+
+`update` 和 `install` 会执行 `apk add --allow-untrusted <本地APK路径>`。如果 APK 文件已经是最新但包被手动卸载了，`tpkg update` 会显示 `INSTALL`，直接把现有 APK 安装回系统。
 
 这样可以兼容这些常见版本格式：
 
