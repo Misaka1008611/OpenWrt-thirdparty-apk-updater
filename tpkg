@@ -452,12 +452,6 @@ item_lines() {
 						bad=1
 					} else {
 						if (mode == "") mode="latest"
-						if (repo_from_release(release) == "sirpdboy/luci-app-lucky" && archive == "") {
-							archive="^SNAPSHOT-x86_64\\.tar\\.gz$"
-						}
-						if (repo_from_release(release) == "ttc0419/uuplugin" && mode == "latest") {
-							mode="semver"
-						}
 						printf "%s|%s|%s|%s|%s\n", pkg, repo_from_release(release), pattern, mode, archive
 					}
 				}
