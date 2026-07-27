@@ -105,24 +105,40 @@ tpkg -d /mnt/sdc1/OpenWrt/apk check
 
 默认 APK 目录在配置文件里：
 
-```sh
-APK_DIR=${APK_DIR:-/mnt/sdc1/OpenWrt/apk}
-DOWNLOAD_DIR=${DOWNLOAD_DIR:-/tmp/tpkg-downloads}
-KEEP_BACKUP=${KEEP_BACKUP:-1}
+```yaml
+apk_dir: /mnt/sdc1/OpenWrt/apk
+download_dir: /tmp/tpkg-downloads
+keep_backup: 1
 ```
 
-每个包一行，格式是：
+软件包配置在 `packages:` 下，每个软件包写成一段：
 
-```text
-包名|GitHub仓库|APK文件名匹配规则|架构
+```yaml
+packages:
+  - name: 包名
+    release: GitHub Release 地址
+    match: 'APK文件名匹配规则'
+    arch: 架构
 ```
 
 例如：
 
-```text
-bandix-plus|timsaya/openwrt-bandix-plus|^bandix-plus-.*_x86_64\.apk$|x86_64
-luci-app-bandix-plus|timsaya/luci-app-bandix-plus|^luci-app-bandix-plus-.*_all\.apk$|all
-lucky|sirpdboy/luci-app-lucky|^lucky-.*\.apk$|any
+```yaml
+packages:
+  - name: bandix-plus
+    release: https://github.com/timsaya/openwrt-bandix-plus/releases
+    match: '^bandix-plus-.*_x86_64\.apk$'
+    arch: x86_64
+
+  - name: luci-app-bandix-plus
+    release: https://github.com/timsaya/luci-app-bandix-plus/releases
+    match: '^luci-app-bandix-plus-.*_all\.apk$'
+    arch: all
+
+  - name: lucky
+    release: https://github.com/sirpdboy/luci-app-lucky/releases
+    match: '^lucky-.*\.apk$'
+    arch: any
 ```
 
 架构字段支持：

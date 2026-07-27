@@ -39,7 +39,7 @@ fetch "$RAW_BASE/tpkg" "$tmp_dir/tpkg" || die "failed to download tpkg"
 fetch "$RAW_BASE/tpkg.conf" "$tmp_dir/tpkg.conf" || die "failed to download tpkg.conf"
 
 grep -q 'Tiny third-party APK release checker' "$tmp_dir/tpkg" || die "downloaded tpkg does not look right"
-grep -q '^TPKG_ITEMS=' "$tmp_dir/tpkg.conf" || die "downloaded tpkg.conf does not look right"
+grep -q '^packages:' "$tmp_dir/tpkg.conf" || die "downloaded tpkg.conf does not look right"
 
 mkdir -p "${INSTALL_BIN%/*}" "${INSTALL_CONF%/*}" || die "failed to create install directories"
 cp "$tmp_dir/tpkg" "$INSTALL_BIN" || die "failed to install $INSTALL_BIN"

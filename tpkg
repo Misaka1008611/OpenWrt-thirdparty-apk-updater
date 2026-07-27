@@ -14,7 +14,7 @@ DRY_RUN=0
 QUIET=0
 ONLY_PACKAGE=""
 KEEP_BACKUP=1
-TPKG_ITEMS=""
+CONFIG_PATH=""
 TMP_ROOT=""
 
 say() {
@@ -96,13 +96,15 @@ load_config() {
 	file=${CONFIG_FILE:-$(default_config_file)}
 	[ -n "$file" ] || die "no config found; put tpkg.conf beside the script or at /etc/config/tpkg"
 	[ -f "$file" ] || die "config not found: $file"
+	CONFIG_PATH=$file
 
-	# shellcheck disable=SC1090
-	. "$file"
-
+	[ -n "${APK_DIR:-}" ] || APK_DIR=$(yaml_scalar "apk_dir")
+	[ -n "${DOWNLOAD_DIR:-}" ] || DOWNLOAD_DIR=$(yaml_scalar "download_dir")
+	[ -n "${KEEP_BACKUP:-}" ] || KEEP_BACKUP=$(yaml_scalar "keep_backup")
 	[ -n "${APK_DIR:-}" ] || die "APK_DIR is empty"
 	[ -n "${DOWNLOAD_DIR:-}" ] || DOWNLOAD_DIR="/tmp/tpkg-downloads"
-	[ -n "${TPKG_ITEMS:-}" ] || die "TPKG_ITEMS is empty"
+	[ -n "${KEEP_BACKUP:-}" ] || KEEP_BACKUP=1
+	item_lines >/dev/null || die "package config is invalid"
 }
 
 http_get() {
@@ -203,9 +205,87 @@ find_remote_asset() {
 	'
 }
 
+yaml_clean_awk='
+	function trim(s) {
+		sub(/^[ \t\r\n]+/, "", s)
+		sub(/[ \t\r\n]+$/, "", s)
+		return s
+	}
+	function clean(s) {
+		s=trim(s)
+		if (s ~ /^'\''.*'\''$/) {
+			sub(/^'\''/, "", s)
+			sub(/'\''$/, "", s)
+		} else if (s ~ /^".*"$/) {
+			sub(/^"/, "", s)
+			sub(/"$/, "", s)
+		}
+		return s
+	}
+'
+
+yaml_scalar() {
+	local key
+	key=$1
+	awk "$yaml_clean_awk"'
+		$0 ~ "^[ \t]*" key "[ \t]*:" {
+			value=$0
+			sub("^[ \t]*" key "[ \t]*:[ \t]*", "", value)
+			print clean(value)
+			exit
+		}
+	' key="$key" "$CONFIG_PATH"
+}
+
 item_lines() {
-	printf '%s\n' "$TPKG_ITEMS" |
-		sed '/^[[:space:]]*$/d; /^[[:space:]]*#/d'
+	awk "$yaml_clean_awk"'
+			function repo_from_release(url) {
+				sub(/^https:\/\/github\.com\//, "", url)
+				sub(/^http:\/\/github\.com\//, "", url)
+				sub(/\/releases\/?$/, "", url)
+				sub(/\/releases\/latest\/?$/, "", url)
+				return url
+			}
+			function emit() {
+				if (pkg != "" || release != "" || pattern != "" || arch != "") {
+					if (pkg == "" || release == "" || pattern == "") {
+						printf "invalid config block near package=%s\n", pkg > "/dev/stderr"
+						bad=1
+					} else {
+						if (arch == "") arch="any"
+						printf "%s|%s|%s|%s\n", pkg, repo_from_release(release), pattern, arch
+					}
+				}
+				pkg=""; release=""; pattern=""; arch=""
+			}
+			/^[ \t]*packages[ \t]*:/ { in_packages=1; next }
+			!in_packages { next }
+			/^[ \t]*$/ { next }
+			/^[ \t]*#/ { next }
+			/^[ \t]*-[ \t]*name[ \t]*:/ {
+				emit()
+				value=$0
+				sub(/^[ \t]*-[ \t]*name[ \t]*:[ \t]*/, "", value)
+				pkg=clean(value)
+				next
+			}
+			{
+				key=$1
+				value=$0
+				sub(/^[ \t]*/, "", key)
+				sub(/[ \t]*:.*/, "", key)
+				sub(/^[ \t]*[^:]+:[ \t]*/, "", value)
+				value=trim(value)
+				if (key == "release") release=clean(value)
+				else if (key == "match") pattern=clean(value)
+				else if (key == "arch") arch=clean(value)
+				else {
+					printf "unknown config key: %s\n", key > "/dev/stderr"
+					bad=1
+				}
+			}
+			END { emit(); if (bad) exit 1 }
+		' "$CONFIG_PATH"
 }
 
 package_exists() {
