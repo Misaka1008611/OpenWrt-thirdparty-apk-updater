@@ -126,6 +126,25 @@ tpkg token github_pat_xxx
 GITHUB_TOKEN=github_pat_xxx tpkg check
 ```
 
+## 获取 GitHub Token
+
+建议使用 Fine-grained personal access token：
+
+1. 打开 GitHub Token 页面：
+   `https://github.com/settings/personal-access-tokens/new`
+2. `Token name` 随便写，例如 `tpkg`
+3. `Expiration` 选择一个有效期，例如 90 天或 1 年
+4. `Repository access` 选择只访问公开仓库；如果页面要求选择资源范围，保持最小范围即可
+5. `Permissions` 不需要额外开启写权限；这个工具只读取 public release 信息
+6. 点击 `Generate token`
+7. 复制生成的 token，在路由器上执行：
+
+```sh
+tpkg token github_pat_xxx
+```
+
+GitHub token 只会显示一次，生成后请马上保存。`tpkg config` 不会显示明文 token，只会显示是否已设置。
+
 软件包配置在 `packages:` 下，每个软件包写成一段。通常只需要写 `name` 和 `release`：
 
 ```yaml
