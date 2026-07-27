@@ -176,13 +176,12 @@ release_assets() {
 			return value
 		}
 		{
-			text=$0
-			if (!in_assets) {
-				pos=index(text, "\"assets\":[")
-				if (!pos) next
-				text=substr(text, pos + 10)
-				in_assets=1
-			}
+			text=text $0
+		}
+		END {
+			pos=index(text, "\"assets\":[")
+			if (!pos) exit
+			text=substr(text, pos + 10)
 			while (match(text, /"name":[[:space:]]*"[^"]+"/)) {
 				name_token=substr(text, RSTART, RLENGTH)
 				name=json_value(name_token, "\"name\":[[:space:]]*\"")
