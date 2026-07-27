@@ -67,13 +67,13 @@ tpkg check
 交互式选择更新：
 
 ```sh
-tpkg check -i
+tpkg update
 ```
 
-也可以写成：
+只更新某一个软件包时，也会进入交互确认：
 
 ```sh
-tpkg update -i
+tpkg update luci-app-lucky
 ```
 
 交互界面里：
@@ -85,22 +85,12 @@ tpkg update -i
 - 回车：更新选中的包
 - `q`：退出
 
+交互模式会列出所有能识别到远端 APK 的包。`NEW` 和 `UPDATE` 默认选中，`OK` 默认不选；如果手动选中 `OK`，会重新下载安装，用于测试或修复本地文件。
+
 只检查某一个软件包：
 
 ```sh
 tpkg check luci-app-lucky
-```
-
-更新全部软件包：
-
-```sh
-tpkg update
-```
-
-只更新某一个软件包：
-
-```sh
-tpkg update luci-app-lucky
 ```
 
 跳过确认，直接更新：

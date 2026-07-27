@@ -51,14 +51,14 @@ Global options:
   -d, --dir DIR       APK directory, overrides config APK_DIR
   -y, --yes           Do not ask before replacing files
   -n, --dry-run       Show actions without downloading/replacing
-  -i, --interactive   Select updates interactively
+  -i, --interactive   Kept for compatibility; update is interactive by default
   -q, --quiet         Less output
   -h, --help          Show this help
 
 Examples:
   $PROG token github_pat_xxx
   $PROG check
-  $PROG check -i
+  $PROG update
   $PROG update luci-app-lucky
   $PROG -d /mnt/sdc1/OpenWrt/apk update -y
 
@@ -629,12 +629,13 @@ replace_apk() {
 }
 
 update_one() {
-	local pkg repo pattern mode archive json tag local_file local_name remote remote_name remote_url remote_member target tmp_file archive_file
+	local pkg repo pattern mode archive force json tag local_file local_name remote remote_name remote_url remote_member target tmp_file archive_file
 	pkg=$1
 	repo=$2
 	pattern=$3
 	mode=$4
 	archive=$5
+	force=${6:-0}
 
 	json=$(github_release_json "$repo" "$mode") || {
 		status_line "ERROR" "$pkg" "-" "-" "-" " github api failed"
@@ -653,12 +654,16 @@ update_one() {
 	remote_url=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $2 }')
 	remote_member=$(printf '%s\n' "$remote" | awk -F '\t' '{ print $3 }')
 
-	if [ "$local_name" = "$remote_name" ]; then
+	if [ "$local_name" = "$remote_name" ] && [ "$force" != "1" ]; then
 		status_line "OK" "$pkg" "$local_name" "$remote_name" "$tag" ""
 		return 0
 	fi
 
-	status_line "UPDATE" "$pkg" "$local_name" "$remote_name" "$tag" ""
+	if [ "$local_name" = "$remote_name" ]; then
+		status_line "REINSTALL" "$pkg" "$local_name" "$remote_name" "$tag" ""
+	else
+		status_line "UPDATE" "$pkg" "$local_name" "$remote_name" "$tag" ""
+	fi
 	case "$remote_name" in
 		*.apk) ;;
 		*) warn "refuse non-apk asset: $remote_name"; return 2 ;;
@@ -758,12 +763,12 @@ collect_candidates() {
 		else
 			state="UPDATE"
 		fi
+		selected=0
 		case "$state" in
-			NEW|UPDATE)
-				printf '0|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-					"$pkg" "$repo" "$pattern" "$mode" "$archive" "$local_name" "$remote_name" "$tag" "$state" >> "$out"
-				;;
+			NEW|UPDATE) selected=1 ;;
 		esac
+		printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+			"$selected" "$pkg" "$repo" "$pattern" "$mode" "$archive" "$local_name" "$remote_name" "$tag" "$state" >> "$out"
 	done <<EOF
 $items
 EOF
@@ -824,7 +829,7 @@ run_selected_candidates() {
 	YES=1
 	awk -F '|' '$1 == "1" { print $2 "|" $3 "|" $4 "|" $5 "|" $6 }' "$file" |
 	while IFS='|' read -r pkg repo pattern mode archive; do
-		update_one "$pkg" "$repo" "$pattern" "$mode" "$archive"
+		update_one "$pkg" "$repo" "$pattern" "$mode" "$archive" 1
 	done
 }
 
@@ -1064,20 +1069,17 @@ main() {
 	case "$CMD" in
 		check)
 			need_github_token
+			[ "$INTERACTIVE" -eq 1 ] && die "check does not support -i; use: $PROG update"
 			[ -n "$ONLY_PACKAGE" ] && package_exists "$ONLY_PACKAGE" || [ -z "$ONLY_PACKAGE" ] || die "unknown package: $ONLY_PACKAGE"
-			if [ "$INTERACTIVE" -eq 1 ]; then
-				run_interactive_update "$ONLY_PACKAGE"
-			else
-				run_check "$ONLY_PACKAGE"
-			fi
+			run_check "$ONLY_PACKAGE"
 			;;
 		update)
 			need_github_token
 			[ -n "$ONLY_PACKAGE" ] && package_exists "$ONLY_PACKAGE" || [ -z "$ONLY_PACKAGE" ] || die "unknown package: $ONLY_PACKAGE"
-			if [ "$INTERACTIVE" -eq 1 ]; then
-				run_interactive_update "$ONLY_PACKAGE"
-			else
+			if [ "$YES" -eq 1 ] || [ "$DRY_RUN" -eq 1 ]; then
 				run_update "$ONLY_PACKAGE"
+			else
+				run_interactive_update "$ONLY_PACKAGE"
 			fi
 			;;
 		install)
